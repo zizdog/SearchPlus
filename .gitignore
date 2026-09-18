@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Logs
+fatal_debug.log
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Node
+node_modules/

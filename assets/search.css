@@ -1,0 +1,110 @@
+/*!
+ * 搜索增强 SearchPlus — 结果页附加内容的样式
+ *
+ * 【刻意不依赖任何主题或其它插件的样式】
+ *   颜色一律用 `currentColor` + 半透明灰（边框/底色），
+ *   所以浅色、深色主题下都看得清，也不会跟主题的配色打架。
+ *   类名统一 `sp-` 前缀。
+ */
+
+.sp-extra {
+    margin: 22px 0 0;
+    padding: 14px 16px;
+    border: 1px solid rgba(128, 128, 128, .28);
+    border-radius: 10px;
+    background: rgba(128, 128, 128, .04);
+    color: inherit;
+    font-size: 14px;
+    line-height: 1.7;
+    box-sizing: border-box;
+}
+
+.sp-extra *,
+.sp-extra *::before,
+.sp-extra *::after {
+    box-sizing: border-box;
+}
+
+/* 关键词被截断时的说明 */
+.sp-extra-note {
+    margin: 0 0 10px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(230, 162, 60, .14);
+    font-size: 13px;
+}
+
+.sp-extra-title {
+    font-size: 13px;
+    color: rgba(128, 128, 128, 1);
+}
+
+.sp-extra-title b {
+    font-size: 15px;
+    color: inherit;
+}
+
+.sp-extra-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 10px;
+}
+
+.sp-extra-more {
+    margin-left: auto;
+    font-size: 13px;
+}
+
+.sp-extra-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.sp-extra-item + .sp-extra-item {
+    border-top: 1px solid rgba(128, 128, 128, .2);
+}
+
+.sp-extra-link {
+    display: block;
+    padding: 8px 0;
+    color: inherit;
+    text-decoration: none;
+}
+
+.sp-extra-link:hover {
+    color: inherit;
+}
+
+.sp-extra-link:hover .sp-extra-text {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.sp-extra-time {
+    display: inline-block;
+    margin-right: 8px;
+    color: rgba(128, 128, 128, 1);
+    font-size: 12px;
+}
+
+.sp-extra-text {
+    font-size: 14px;
+}
+
+.sp-extra mark {
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(70, 123, 150, .18);
+    color: inherit;
+    font-weight: 600;
+}
+
+@media (max-width: 575px) {
+    .sp-extra {
+        margin-top: 16px;
+        padding: 12px 12px;
+    }
+}
