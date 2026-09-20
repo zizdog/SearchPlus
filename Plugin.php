@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.3
+ * @version 1.0.4
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.3';
+        const VERSION = '1.0.4';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -44,6 +44,9 @@ namespace {
 
         /** @var string 本次请求解码出来的原文关键词 */
         private static $keyword = NULL;
+
+        /** @var bool 本次请求是否补回过路由（设置页会据此给一句提示） */
+        private static $routeRepaired = false;
 
         /* ============================================================== */
         /* 启停                                                            */
@@ -114,6 +117,53 @@ namespace {
 
             try {
                 return null !== Typecho_Router::get(self::ROUTE_JUMP);
+            } catch (Throwable $e) {
+                return false;
+            }
+        }
+
+        /**
+         * 路由自愈：`/search` 路由丢了就补回来
+         *
+         * 【为什么会丢】路由表就是数据库里 `routingTable` 那一行，而且**只在
+         * 「启用插件」那一刻**由 `activate()` 写入一次。下面几种情况会让它无声消失
+         * （前台一切照旧，直到有人访问 `/search/` 才暴露）：
+         *   · 插件文件是拷进去的 / activated 列表被手改过 / 从「启用之前」的 dump 恢复
+         *     → `activate()` 从没跑过，路由从未写入；
+         *   · `routingTable` 整行被替换（恢复到旧快照、手工改库）。
+         * （核心那几处会写这一行的地方——保存永久链接、保存阅读设置、1.3 升级、
+         *   `Options::___routingTable()` 的解析缓存——都是**基于当前行增量修改**，
+         *   不会抹掉插件路由，这点已查过源码，不必防。）
+         *
+         * 【什么时候补】后台打开插件设置页时检查一次，缺失才补。理由：
+         *   · 只做加法、只在缺失时写，不会每次开页面都写库，也不会动别人的路由；
+         *   · 前台不做：前台查库/写库不划算，而且路由丢了时 `isReady()` 已经让主题
+         *     回落到原生搜索，功能不断，管理员下次打开设置页即自愈。
+         *
+         * 【不会误加回来】两个守卫：`isActive()` 为假时直接返回（停用期间不补）；
+         * 而且 Typecho 的停用流程（`Edit::deactivate()`）只调 `deactivate()`，
+         * **不会**调 `config()`，所以自愈没有机会在停用时被触发。
+         *
+         * @return bool 本次是否真的补了路由
+         */
+        public static function repairRoute()
+        {
+            try {
+                // 插件没启用就不该有这条路由
+                if (!self::isActive()) {
+                    return false;
+                }
+
+                // 内存里的路由表就是从那一行解析出来的：内存里有 = 行里也有，直接跳过
+                if (NULL !== Typecho_Router::get(self::ROUTE_JUMP)) {
+                    return false;
+                }
+
+                // 缺失时直接追加：不先 remove（少一次写库，也避免误删别人的路由）
+                Helper::addRoute(self::ROUTE_JUMP, self::ROUTE_URL, 'SearchPlus_Search', 'dispatch', 'index');
+                self::$routeRepaired = true;
+
+                return true;
             } catch (Throwable $e) {
                 return false;
             }
@@ -451,7 +501,34 @@ CODE;
                 . '<h4>③ 怎么验证装对了</h4>'
                 . '<pre><code>' . $esc($snippetCheck) . '</code></pre>'
                 . '<p class="sp-help-muted">另外：本插件的<b>路由与钩子是在「启用插件」时写入配置的</b>，'
-                . '以后升级插件若发现搜索没走插件路由，把插件「停用 → 启用」一次即可。</p>'
+                . '以后升级插件若发现搜索没走插件路由，把插件「停用 → 启用」一次即可'
+                . '（1.0.4 起打开本页也会自动检查并补回，见下方提示）。</p>'
+                . '</div>';
+        }
+
+        /**
+         * 「已自动补回路由」提示块（只在本次真的补过时输出）
+         *
+         * @return string
+         */
+        public static function routeRepairedHtml()
+        {
+            return '<div id="sp-repair" class="sp-repair">'
+                . '<style>'
+                . '#sp-repair{--sp-bd:var(--ad-line,#e3e6ea);--sp-bg:var(--ad-surface-alt,rgba(128,128,128,.06));'
+                . '--sp-fg:var(--ad-fg,#444);--sp-ac:var(--ad-accent,#467b96);'
+                . 'border:1px solid var(--sp-bd);border-left:3px solid var(--sp-ac);border-radius:6px;'
+                . 'padding:12px 16px;margin:0 0 18px;background:var(--sp-bg);color:var(--sp-fg);'
+                . 'line-height:1.8;font-size:13px}'
+                . '#sp-repair p{margin:4px 0}'
+                . '#sp-repair code{font-family:Menlo,Monaco,Consolas,monospace;font-size:12px}'
+                . '</style>'
+                . '<p><b>检测到 <code>/search</code> 路由缺失，已自动补回。</b></p>'
+                . '<p>这条路由只在「启用插件」时写入一次（存在数据库的 <code>routingTable</code> 里）：'
+                . '文件被直接拷进来、或数据库从旧快照恢复过，都可能让它丢失。'
+                . '丢了不会报错，只会让搜索框指向死路 —— 所以主题那边请用 '
+                . '<code>SearchPlus_Plugin::isReady()</code> 判断，缺路由时自动回落原生搜索。</p>'
+                . '<p>本次无需任何操作；刷新一次前台页面即可走插件路由。</p>'
                 . '</div>';
         }
 
@@ -564,6 +641,14 @@ CODE;
             self::repairConfigRow();
 
             /*
+             * 【第二步】顺手检查路由。
+             * 路由只在「启用插件」那一刻写进 routingTable，之后没有任何东西保证它在；
+             * 缺了不会报错，只会让 /search/ 变成死路（主题此时靠 isReady() 已回落原生搜索）。
+             * 缺失才补，只写一次库。
+             */
+            self::repairRoute();
+
+            /*
              * 最上面先放「怎么用」——用户装完插件最需要的就是这几行接线代码，
              * 示例直接用本站主题（GardenWalk）的真实写法，并写成**判断式**：
              * 插件没启用时自动回落到 Typecho 原生搜索，不会 404。
@@ -577,6 +662,17 @@ CODE;
                     $form->addItem($help);
                 } catch (Throwable $e) {
                     // 布局类不可用时忽略，不影响表单本身
+                }
+            }
+
+            // 本次真的补过路由 → 给一句提示，让管理员知道刚发生了什么
+            if (self::$routeRepaired && '' !== $helpLayout) {
+                try {
+                    $note = new $helpLayout();
+                    $note->html(self::routeRepairedHtml());
+                    $form->addItem($note);
+                } catch (Throwable $e) {
+                    // 同上，忽略
                 }
             }
 
