@@ -2,7 +2,7 @@
 
 让 Typecho 的站内搜索**搜得准**，并且**不改核心、不换页面、不脱离主题**。
 
-- 版本：1.0.2
+- 版本：1.0.3
 - 环境：Typecho 1.2 / 1.3（本站为 1.3.0）
 - 依赖：**无**（可选配合「轻言 Qingyan」插件，装上就顺带列出轻言命中）
 
@@ -121,6 +121,23 @@ SearchPlus/
 ```
 
 ## 变更
+
+### 1.0.3
+
+- **新增 `SearchPlus_Plugin::isActive()` / `isReady()`**，主题接线判据从 `class_exists()`
+  升级为 `isReady()`。原因：
+  - `class_exists()` 只说明「类能加载」，文件拷进去就成立，不代表插件启用过；
+  - 只看「是否启用」也不够 —— 路由是启用那一刻写进 `routingTable` 的，
+    重建过路由表（如保存「永久链接」设置）就会出现「插件启用着、`/search` 却不存在」，
+    搜索框把用户送进死路：Typecho 抛 `Router\Exception`，开着 debug 时还会返回
+    **HTTP 200 的错误页**，主题 PJAX 只看到「没有 #main」，控制台报 `PJAX 错误`。
+  - `isReady()` = 已启用 + `Router::get('searchplus')` 非空，两者都满足才走 `/search/`，
+    否则自动回落原生 `?s=`（实测该链路正常）。
+- **键名约定（实测 Typecho 1.3.0）**：`Plugin::export()['activated']` 的 key 是
+  **插件名（目录名）**（`activated['SearchPlus']`），不是类名 `SearchPlus_Plugin`；
+  核心 `Plugin::activate(string $pluginName)` 直接拿目录名做键。
+  `isActive()` 两个都认，兼容老版本惯例。
+- 设置页「怎么用」里的示例代码同步改成 `isReady()` 写法。
 
 ### 1.0.2
 

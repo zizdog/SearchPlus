@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.2
+ * @version 1.0.3
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.2';
+        const VERSION = '1.0.3';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -61,6 +61,62 @@ namespace {
 
             return _t('搜索增强已启用。请到主题模板里把搜索框的 action 指到 ')
                 . '<code>/search/</code>' . _t('（未启用时它会退回原生搜索，不会 404）。');
+        }
+
+        /**
+         * 插件是否**已启用**
+         *
+         * 【为什么不能用 class_exists】类存在只说明文件被加载过（拷进去就可能成立），
+         * 不代表插件在后台启用过 —— 主题若拿 `class_exists()` 当判据，
+         * 就会把搜索框指向一个**并不存在**的 `/search/` 路由（搜索结果页变成 404/异常页）。
+         *
+         * 【键名约定（Typecho 1.3 实测）】`Plugin::export()['activated']` 的 key 是
+         * **插件名（目录名）**，不是类名 —— 核心 `Plugin::activate(string $pluginName)`
+         * 直接拿目录名做键：
+         *     self::$plugin['activated'][$pluginName] = self::$tmp;
+         * 所以 1.3 上判断要写 `activated['SearchPlus']`；
+         * 老版本（1.2 时代）的惯例是 `SearchPlus_Plugin`，这里两个都认。
+         *
+         * @return bool
+         */
+        public static function isActive()
+        {
+            try {
+                $export = Typecho_Plugin::export();
+                $list   = (isset($export['activated']) && is_array($export['activated']))
+                    ? $export['activated']
+                    : array();
+                $dir    = basename(dirname(__FILE__));   // SearchPlus
+
+                return isset($list[$dir]) || isset($list[$dir . '_Plugin']);
+            } catch (Throwable $e) {
+                return false;
+            }
+        }
+
+        /**
+         * 插件是否**真的可用**（已启用 + 路由已注册）
+         *
+         * 主题应该用这个，而不是 `class_exists()`：
+         * 只看「启用」还不够 —— 路由是**启用那一刻**写进 `routingTable` 的，
+         * 之后若重建过路由表（例如保存「永久链接」设置），
+         * 就会出现「插件是启用的、`/search` 却不存在」的状态，
+         * 搜索框照样会把用户送进死路（Typecho 会抛 Router\Exception，
+         * 开着 debug 时更会返回 200 的错误页，PJAX 只看到「没有 #main」）。
+         *
+         * @return bool
+         */
+        public static function isReady()
+        {
+            if (!self::isActive()) {
+                return false;
+            }
+
+            try {
+                return null !== Typecho_Router::get(self::ROUTE_JUMP);
+            } catch (Throwable $e) {
+                return false;
+            }
         }
 
         /**
@@ -324,8 +380,11 @@ namespace {
 
             $snippetForm = <<<'CODE'
 <?php
-// ① 搜索框的目标地址：装了本插件就走 /search/，否则回到原生 ?s= 搜索
-$searchAction = class_exists('SearchPlus_Plugin')
+// ① 搜索框的目标地址：插件真的可用才走 /search/，否则回到原生 ?s= 搜索。
+//    判据用 isReady()（已启用 + 路由已注册），不要只用 class_exists()——
+//    类能加载不代表启用过；就算启用了，路由也可能因重建路由表而丢失，
+//    那时 /search/ 会 404（开 debug 时是 200 的错误页），搜索框就成了死路。
+$searchAction = (class_exists('SearchPlus_Plugin') && SearchPlus_Plugin::isReady())
     ? rtrim($this->options->siteUrl, '/') . '/search/'
     : $this->options->siteUrl;
 ?>
