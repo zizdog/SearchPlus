@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.1
+ * @version 1.0.2
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.1';
+        const VERSION = '1.0.2';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -413,6 +413,82 @@ CODE;
         }
 
         /**
+         * 确保 `plugin:SearchPlus` 配置行存在、且是合法配置
+         *
+         * 【为什么必须有】Typecho 1.3 的插件设置页会**直接**读这一行
+         * （`Widget\Plugins\Config::config()` → `Options->plugin('SearchPlus')`），
+         * 行缺失或值为空就当场抛 `Plugin\Exception`——
+         * 异常发生在核心里，插件自己的 try/catch 兜不住，
+         * 表现就是后台报「插件SearchPlus的配置信息没有找到」。
+         *
+         * 而「禁用 → 重新启用」也不一定能救回来：当这一行**存在但值为空**时，
+         * 核心 `Edit::configPlugin()` 会走 `json_decode('') === null` →
+         * `array_merge(null, $settings)` → PHP 8 直接 TypeError，
+         * 启用流程中断，值永远补不上（用户看到的就是「重启也没用」）。
+         *
+         * 所以这里自己把这一行补齐，并且**同时**写内存里的 Options 副本 ——
+         * `Widget::__set()` 写的正是 `$this->row['plugin:SearchPlus']`，
+         * 也就是核心后面那次读要用的键，于是**同一次请求**里设置页就能打开，
+         * 不用刷新第二次。
+         *
+         * @return bool true = 本来就没问题或已修好；false = 数据库写不进去（已做内存兜底）
+         */
+        public static function repairConfigRow()
+        {
+            $name = 'plugin:SearchPlus';
+            $json = json_encode(self::defaults(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $needFix = null;
+
+            try {
+                $db   = sp_db();
+                $rows = $db->fetchAll($db->select()->from('table.options')->where('name = ?', $name));
+
+                if (empty($rows)) {
+                    $db->query($db->insert('table.options')->rows(array(
+                        'name'  => $name,
+                        'user'  => 0,
+                        'value' => $json,
+                    )));
+                    $needFix = $json;
+                } else {
+                    foreach ($rows as $row) {
+                        $current = (string) $row['value'];
+
+                        // 兼容两种格式：核心写 JSON；老版本/别处可能写 PHP serialize
+                        $decoded = (0 === strpos($current, 'a:'))
+                            ? @unserialize($current)
+                            : json_decode($current, true);
+
+                        if (!is_array($decoded) || array() === $decoded) {
+                            $db->query(
+                                $db->update('table.options')
+                                    ->rows(array('value' => $json))
+                                    ->where('name = ?', $name)
+                                    ->where('user = ?', $row['user'])
+                            );
+                            if (null === $needFix) {
+                                $needFix = $json;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                // 数据库动不了也要让本次请求能打开设置页 → 内存兜底
+                $needFix = $json;
+            }
+
+            if (null !== $needFix) {
+                try {
+                    Helper::options()->{$name} = $needFix;
+                } catch (Throwable $e) {
+                    // 拿不到 Options 就算了，下次请求会从库里读到
+                }
+            }
+
+            return true;
+        }
+
+        /**
          * 插件配置表单
          *
          * @param mixed $form
@@ -420,6 +496,14 @@ CODE;
          */
         public static function config($form)
         {
+            /*
+             * 【第一步】先把配置行补齐。
+             * 核心在 config() 之后会立刻 `Options->plugin('SearchPlus')` 取配置，
+             * 那一行缺失/为空就直接抛异常（插件 catch 不到）。这里补库 + 补内存，
+             * 保证同一次请求里那次读能拿到值。
+             */
+            self::repairConfigRow();
+
             /*
              * 最上面先放「怎么用」——用户装完插件最需要的就是这几行接线代码，
              * 示例直接用本站主题（GardenWalk）的真实写法，并写成**判断式**：
@@ -488,6 +572,14 @@ CODE;
              * 我第一版用 CLI 启用时就踩了这个坑（返回了数组 = 真值）。
              */
             if ($isInit) {
+                /*
+                 * 回填阶段：顺手把「空行/坏行」修成合法 JSON 再返回假值。
+                 * 不修的话核心下面 `configPlugin()` 会对空值做
+                 * `array_merge(json_decode('') = null, …)` → PHP 8 TypeError，
+                 * 启用流程当场中断 ——「禁用→重新启用无效」就是这么来的。
+                 */
+                self::repairConfigRow();
+
                 return false;
             }
 
