@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.5
+ * @version 1.0.6
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.5';
+        const VERSION = '1.0.6';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -44,6 +44,12 @@ namespace {
 
         /** @var string 本次请求解码出来的原文关键词 */
         private static $keyword = NULL;
+
+        /** @var bool 本次请求是不是搜索页（摘要钩子据此决定要不要改） */
+        private static $isSearch = false;
+
+        /** @var bool 本次结果是不是「忽略标点/空白」兜底查出来的 */
+        private static $relaxed = false;
 
         /** @var bool 本次请求是否补回过路由（设置页会据此给一句提示） */
         private static $routeRepaired = false;
@@ -136,27 +142,30 @@ namespace {
         }
 
         /**
-         * 搜索引擎的钩子是否真的注册了
+         * 某个组件上是否已经注册了本插件的回调
          *
-         * 从 `Plugin::export()['handles']` 里找 `Widget_Archive:search` 这类键，
-         * 且回调必须指向本插件。键名与版本有关（`Widget_Archive` / `Widget\Archive`），
-         * 所以按后缀 `:search` 匹配，不写死前缀。
+         * 从 `Plugin::export()['handles']` 里找 `<Handle>:<component>` 这类键，
+         * 且回调必须指向本插件。键名里的 Handle 与 Typecho 版本有关
+         * （`Widget_Archive` / `Widget\Archive`、`Widget_Base_Contents` …），
+         * 所以按后缀 `:<component>` 匹配，不写死前缀。
          *
+         * @param string $component 组件名（search / searchHandle / footer / excerpt）
          * @return bool
          */
-        protected static function isEngineHooked()
+        protected static function hookRegistered($component)
         {
             try {
                 $export  = Typecho_Plugin::export();
                 $handles = (isset($export['handles']) && is_array($export['handles']))
                     ? $export['handles']
                     : array();
+                $suffix  = ':' . $component;
+                $len     = strlen($suffix);
 
                 foreach ($handles as $key => $callbacks) {
                     $key = (string) $key;
 
-                    // 只认 `<Widget>:search`，不认 `:searchHandle` / `:search_page`
-                    if (strlen($key) < 7 || 0 !== substr_compare($key, ':search', -7)) {
+                    if (strlen($key) < $len || 0 !== substr_compare($key, $suffix, -$len)) {
                         continue;
                     }
 
@@ -184,18 +193,49 @@ namespace {
         }
 
         /**
-         * 钩子自愈：`plugins` 行里 `activated` 有本插件、`handles` 却丢了 → 补回来
+         * 搜索引擎的钩子是否真的注册了（isReady 只要这一条）
+         *
+         * @return bool
+         */
+        protected static function isEngineHooked()
+        {
+            return self::hookRegistered('search');
+        }
+
+        /**
+         * 全部钩子是否都注册了（自愈时用）
+         *
+         * @return bool
+         */
+        protected static function hasAllHooks()
+        {
+            foreach (self::hooksMap() as $hook) {
+                if (!self::hookRegistered($hook[1])) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /**
+         * 钩子自愈：`plugins` 行里 `activated` 有本插件、`handles` 却少了 → 补回来
          *
          * 【为什么会丢】和路由一样，回调只在「启用插件」那一刻写进 `plugins` 行的
          * `handles`。行被整行恢复（旧快照）、手改过、或从别的站点拷过来时，
          * 就会出现「activated 里有、handles 里没有」：路由还在、搜索框照样指向
          * `/search/`，但引擎根本不接管 → 静默 0 结果。
          *
-         * 【怎么做】用与核心 `Edit::activate()` 完全相同的两步：
-         * `installHooks()` 注册到内存 → `Plugin::activate()` 记进 activated（停用时才删得掉）
-         * → 把整个 `Plugin::export()` 写回 `plugins` 行（JSON，与核心一致）。
+         * 【升级也会遇到】新增钩子（例如 1.0.6 的 `excerpt`）只写进 installHooks()，
+         * 老站点换文件后 `plugins` 行还是旧的 → 新钩子不生效。
+         * 所以这里检查的是**全部**钩子，少一个就补齐。
          *
-         * 只在「已启用 + 钩子缺失」时动手；在后台打开设置页时检查一次，
+         * 【怎么补】先 `Plugin::deactivate()` 把 activated 里记录过的旧回调摘掉
+         * （避免重复注册），再 `installHooks()` 重新注册，最后 `Plugin::activate()`
+         * 把本次注册记进 activated 并把整个 `Plugin::export()` 写回 `plugins` 行
+         * —— 与核心停用/启用走的是同一套函数。
+         *
+         * 只在「已启用 + 有钩子缺失」时动手；在后台打开设置页时检查一次，
          * 不碰前台（前台写库不划算，而且这时 isReady() 已让主题回落原生搜索）。
          *
          * @return bool 本次是否真的补过
@@ -203,10 +243,11 @@ namespace {
         public static function repairHooks()
         {
             try {
-                if (!self::isActive() || self::isEngineHooked()) {
+                if (!self::isActive() || self::hasAllHooks()) {
                     return false;
                 }
 
+                Typecho_Plugin::deactivate('SearchPlus');
                 self::installHooks();
                 Typecho_Plugin::activate('SearchPlus');
                 Helper::setOption('plugins', Typecho_Plugin::export());
@@ -304,21 +345,44 @@ namespace {
         }
 
         /**
-         * 注册钩子
+         * 需要注册的钩子：array(接口类, 组件名, 本插件回调方法)
          *
          * 【search】只要这个钩子上有回调，核心就会跳过它自己那套搜索条件
          *          （`Typecho\Plugin::call()` 见到回调就把 signal 置真）；
-         * 【searchHandle】核心唯一会把 `$select` 交出来的地方 —— 我们在这里加条件；
-         * 【footer】给「不在模板里调用 renderExtra()」的主题兜底（本站主题会直接调，
-         *          两条路都只输出一次）。
+         * 【searchHandle】核心唯一会把 `$select` 交出来的地方 —— 这里只改标题/面包屑；
+         * 【footer】给「不在模板里调用 renderExtra()」的主题兜底；
+         * 【excerpt】搜索结果摘要：按关键词定位（`___excerpt()` 会跑这个过滤器，
+         *          所以**主题不用改**就能让摘要落在关键词附近）。
+         *
+         * @return array
+         */
+        protected static function hooksMap()
+        {
+            return array(
+                array('Widget_Archive', 'search', 'onSearch'),
+                array('Widget_Archive', 'searchHandle', 'onSearchHandle'),
+                array('Widget_Archive', 'footer', 'onFooter'),
+                array('Widget\Base\Contents', 'excerpt', 'onExcerpt'),
+            );
+        }
+
+        /**
+         * 注册钩子（幂等：已经注册过的组件跳过，避免自愈时重复注册）
          *
          * @return void
          */
         protected static function installHooks()
         {
-            Typecho_Plugin::factory('Widget_Archive')->search = array('SearchPlus_Plugin', 'onSearch');
-            Typecho_Plugin::factory('Widget_Archive')->searchHandle = array('SearchPlus_Plugin', 'onSearchHandle');
-            Typecho_Plugin::factory('Widget_Archive')->footer = array('SearchPlus_Plugin', 'onFooter');
+            foreach (self::hooksMap() as $hook) {
+                list($handle, $component, $method) = $hook;
+
+                if (self::hookRegistered($component)) {
+                    continue;
+                }
+
+                $plugin = Typecho_Plugin::factory($handle);
+                $plugin->{$component} = array('SearchPlus_Plugin', $method);
+            }
         }
 
         /* ============================================================== */
@@ -327,7 +391,8 @@ namespace {
 
         public static function onSearch($keywords = '', $archive = NULL)
         {
-            self::$keyword = self::readKeyword($archive);
+            self::$keyword  = self::readKeyword($archive);
+            self::$isSearch = true;
 
             if (!is_object($archive) || !method_exists($archive, 'query')) {
                 return;
@@ -339,15 +404,62 @@ namespace {
                 return;
             }
 
+            try {
+                $db = sp_db();
+            } catch (Throwable $e) {
+                return;
+            }
+
             /*
-             * 总数要在 `page()` 之前算：`size()` 是把这条查询改成 COUNT 再跑，
-             * 带上 LIMIT 就只数当前页了。
+             * 先数总数：分页要用它，也用它判断「要不要走标点/空白兜底」。
+             * `size()` 是把查询改成 COUNT 再跑，所以必须在 `page()` 之前。
              */
+            $total = -1;
+
+            try {
+                $total = SearchPlus_Engine::countRows($db, clone $select);
+            } catch (Throwable $e) {
+                $total = -1;
+            }
+
+            /*
+             * 精确查询 0 条时再试一次「忽略标点/空白」的宽松匹配。
+             *
+             * 真实场景：用户记得的是**读起来连续的句子**，而库里是 Markdown/HTML ——
+             * 「江城子·浣花溪上见卿卿」「江畔何人初见月？江月何年初照人？」这类查询
+             * 整串精确匹配必然 0 条（实测）。宽松命中很少，所以不计较那一次额外查询。
+             */
+            if (0 === $total) {
+                try {
+                    $cids = SearchPlus_Engine::relaxedCids($db, self::$keyword);
+
+                    if (!empty($cids)) {
+                        $relaxed = SearchPlus_Engine::selectByCids($db, $cids);
+
+                        if (NULL !== $relaxed) {
+                            $select        = $relaxed;
+                            $total         = count($cids);
+                            self::$relaxed = true;
+                        }
+                    }
+                } catch (Throwable $e) {
+                    // 兜底失败就当没发生，仍然是 0 条
+                }
+            }
+
+            if ($total >= 0) {
+                try {
+                    $archive->setTotal($total);
+                } catch (Throwable $e) {
+                    // 拿不到总数最多影响分页条
+                }
+            }
+
             if (method_exists($archive, 'setCountSql')) {
                 try {
                     $archive->setCountSql(clone $select);
                 } catch (Throwable $e) {
-                    // 忽略：分页条显示不出来不影响结果
+                    // 忽略
                 }
             }
 
@@ -362,16 +474,44 @@ namespace {
                 // 用上面的默认值
             }
 
+            // 越界页：对齐核心语义（currentPage > 1 且没有结果 → 404）
+            if ($page > 1 && 0 === $total) {
+                self::notFound();
+            }
+
             $select->order('table.contents.created', SP_SORT_DESC)->page($page, $size);
 
             // 压栈：主题照常 $this->next() 渲染。核心此刻已因 $hasPushed 直接返回，
             // 所以这是本次请求唯一一次查询。
             $archive->query($select);
 
+            if ($page > 1 && !$archive->have()) {
+                self::notFound();
+            }
+        }
+
+        /**
+         * 抛出「页面不存在」（与核心越界行为一致）
+         *
+         * 注册了 `search` 钩子后，核心在 `if ($hasPushed) return;` 处直接返回，
+         * 它自己的「翻过最后一页 → 404」检查就被跳过了 —— 这里补回来。
+         *
+         * @return void
+         * @throws Throwable
+         */
+        protected static function notFound()
+        {
+            $class = class_exists('Typecho\Widget\Exception')
+                ? 'Typecho\Widget\Exception'
+                : 'Typecho_Widget_Exception';
+
+            throw new $class(_t('请求的地址不存在'), 404);
         }
 
         public static function onSearchHandle($archive = NULL, $select = NULL)
         {
+            self::$isSearch = true;
+
             if (!is_object($archive)) {
                 return;
             }
@@ -412,6 +552,114 @@ namespace {
             self::renderExtra($archive);
         }
 
+        /**
+         * `excerpt` 钩子：把搜索结果摘要挪到关键词附近
+         *
+         * 【为什么挂这里】核心 `Widget\Base\Contents::___excerpt()` 会跑
+         * `filter('excerpt', $this->content, $this)`，主题再调 `$post->excerpt(80)`
+         * 就是「striptags + 截前 80 字」。所以**只要改过滤器的返回值**，
+         * 任何主题都不用动，摘要就会落在命中处。
+         *
+         * 不做的两件事：
+         *   · 密码保护的内容（`hidden`）原样返回，避免泄漏；
+         *   · 非搜索页原样返回（这个钩子是全局的）。
+         *
+         * 注意：`excerpt()` 里还会 `strip_tags()`，所以这里只返回**纯文本**；
+         * 想要 `<mark>` 高亮必须由主题或前端 JS 做（插件不越界改主题）。
+         *
+         * @param string $content  摘要原文（HTML）
+         * @param mixed  $widget   当前内容 widget（可选）
+         * @param mixed  $lastNum  过滤器链里的当前值（未用）
+         * @return string
+         */
+        public static function onExcerpt($content, $widget = NULL, $lastNum = NULL)
+        {
+            if (!self::$isSearch) {
+                return $content;
+            }
+
+            $keyword = self::readKeyword();
+
+            if ('' === $keyword) {
+                return $content;
+            }
+
+            if (is_object($widget)) {
+                try {
+                    if (!empty($widget->hidden)) {
+                        return $content;
+                    }
+                } catch (Throwable $e) {
+                    // 判断不了就按普通内容处理
+                }
+            }
+
+            $plain = strip_tags((string) $content);
+
+            // 短代码（某些主题/插件会留在正文里）
+            $plain = preg_replace('/\[\w+[^\]]*\]|\[\/\w+\]/', '', $plain);
+            $plain = preg_replace('/\s+/u', ' ', (string) $plain);
+            $plain = trim((string) $plain);
+
+            if ('' === $plain) {
+                return $content;
+            }
+
+            $words = SearchPlus_Engine::words($keyword);
+            $hit   = self::firstHit($plain, $words);
+
+            if (NULL === $hit) {
+                return $content;
+            }
+
+            $start = max(0, $hit - 30);
+            $len   = 140;
+
+            $snippet = function_exists('mb_substr')
+                ? mb_substr($plain, $start, $len, 'UTF-8')
+                : substr($plain, $start, $len);
+
+            if ($start > 0) {
+                $snippet = '…' . $snippet;
+            }
+
+            $total = function_exists('mb_strlen') ? mb_strlen($plain, 'UTF-8') : strlen($plain);
+
+            if ($start + $len < $total) {
+                $snippet .= '…';
+            }
+
+            return $snippet;
+        }
+
+        /**
+         * 在纯文本里找第一个命中的关键词位置（字符下标）
+         *
+         * @param string $plain
+         * @param array  $words
+         * @return int|null
+         */
+        protected static function firstHit($plain, array $words)
+        {
+            $best = NULL;
+
+            foreach ($words as $word) {
+                if ('' === $word) {
+                    continue;
+                }
+
+                $pos = function_exists('mb_stripos')
+                    ? mb_stripos($plain, $word, 0, 'UTF-8')
+                    : stripos($plain, $word);
+
+                if (false !== $pos && (NULL === $best || $pos < $best)) {
+                    $best = (int) $pos;
+                }
+            }
+
+            return $best;
+        }
+
         /* ============================================================== */
         /* 结果页附加内容（轻言命中，松耦合）                              */
         /* ============================================================== */
@@ -450,18 +698,35 @@ namespace {
                 return;
             }
 
+            $total = self::articleTotal($archive);
+
+            /*
+             * 0 条结果：给一条出路。
+             *
+             * 以前这里什么都不输出 —— 页面标题写着「包含关键字 X 的文章」，
+             * 正文却是一片空白（实测）。现在先说明「没找到」，再给
+             * 「少打几个字 / 用空格分词」的建议和站内热门标签。
+             */
+            if (0 === $total) {
+                self::$extraDone = true;
+                self::echoEmptyState($keyword);
+
+                return;
+            }
+
             $cut  = self::isTruncated();
             $rows = self::qingyanRows($keyword);
 
-            if (empty($rows) && !$cut) {
+            // 只有「被截断」或「走了宽松兜底」或「轻言有命中」时才需要这一块
+            if (empty($rows) && !$cut && !self::$relaxed) {
                 return;
             }
 
             self::$extraDone = true;
 
-            $total = self::qingyanTotal($keyword);
-            $front = self::qingyanFrontUrl();
-            $esc   = function ($value) {
+            $qyTotal = self::qingyanTotal($keyword);
+            $front   = self::qingyanFrontUrl();
+            $esc     = function ($value) {
                 return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
             };
 
@@ -469,13 +734,16 @@ namespace {
             echo '<link rel="stylesheet" href="' . $esc(self::assetUrl('search.css')) . '">' . "\n";
             ?>
 <div class="sp-extra" id="sp-extra">
+    <?php if (self::$relaxed) { ?>
+    <p class="sp-extra-note">没有精确匹配，已忽略标点与空格重新搜索：<b><?php echo $esc($keyword); ?></b></p>
+    <?php } ?>
     <?php if ($cut) { ?>
     <p class="sp-extra-note">关键词太长，只用了前一部分来搜索：<b><?php echo $esc($keyword); ?></b></p>
     <?php } ?>
     <?php if (!empty($rows)) { ?>
     <div class="sp-extra-head">
-        <span class="sp-extra-title">轻言里也有 <b><?php echo intval($total); ?></b> 条相关</span>
-        <a class="sp-extra-more" href="<?php echo $esc(self::qingyanSearchUrl($keyword, $front)); ?>">在轻言里看<?php echo $total > count($rows) ? '全部' : ''; ?> &rarr;</a>
+        <span class="sp-extra-title">轻言里也有 <b><?php echo intval($qyTotal); ?></b> 条相关</span>
+        <a class="sp-extra-more" href="<?php echo $esc(self::qingyanSearchUrl($keyword, $front)); ?>">在轻言里看<?php echo $qyTotal > count($rows) ? '全部' : ''; ?> &rarr;</a>
     </div>
     <ul class="sp-extra-list">
         <?php foreach ($rows as $row) { ?>
@@ -490,6 +758,105 @@ namespace {
     <?php } ?>
 </div>
             <?php
+        }
+
+        /**
+         * 0 结果时输出「没找到 + 建议 + 热门标签」
+         *
+         * @param string $keyword
+         * @return void
+         */
+        protected static function echoEmptyState($keyword)
+        {
+            $esc = function ($value) {
+                return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+            };
+
+            $tags   = self::popularTags(10);
+            $search = rtrim((string) Helper::options()->siteUrl, '/') . '/search/';
+
+            echo '<link rel="stylesheet" href="' . $esc(self::assetUrl('search.css')) . '">' . "\n";
+            ?>
+<div class="sp-extra sp-empty" id="sp-empty">
+    <p class="sp-extra-note">没有找到包含 <b><?php echo $esc($keyword); ?></b> 的文章。</p>
+    <p class="sp-empty-tip">可以试试：少打几个字；多个关键词用空格分开；或者直接搜站内标签。</p>
+    <?php if (!empty($tags)) { ?>
+    <div class="sp-extra-head"><span class="sp-extra-title">站内标签</span></div>
+    <ul class="sp-extra-list sp-tag-list">
+        <?php foreach ($tags as $tag) { ?>
+        <li class="sp-extra-item sp-tag-item">
+            <a class="sp-extra-link" href="<?php echo $esc($search . rawurlencode($tag)); ?>"><?php echo $esc($tag); ?></a>
+        </li>
+        <?php } ?>
+    </ul>
+    <?php } ?>
+</div>
+            <?php
+        }
+
+        /**
+         * 本次搜索的文章总数（拿不到返回 -1）
+         *
+         * @param Widget_Archive $archive
+         * @return int
+         */
+        protected static function articleTotal($archive)
+        {
+            if (is_object($archive) && method_exists($archive, 'getTotal')) {
+                try {
+                    return intval($archive->getTotal());
+                } catch (Throwable $e) {
+                    return -1;
+                }
+            }
+
+            return -1;
+        }
+
+        /**
+         * 站内热门标签（按使用次数取前 N 个）
+         *
+         * 只用一条普通查询，计数在 PHP 里做 —— 避免在 SQL 里拼聚合表达式，
+         * 也就不用担心 `Query::filterColumn()` 把函数名当列名加引号。
+         *
+         * @param int $limit
+         * @return array
+         */
+        protected static function popularTags($limit = 10)
+        {
+            $limit = max(1, min(30, intval($limit)));
+
+            try {
+                $db  = sp_db();
+                $rows = $db->fetchAll(
+                    $db->select('table.metas.name', 'table.relationships.cid')
+                        ->from('table.metas')
+                        ->join('table.relationships', 'table.relationships.mid = table.metas.mid')
+                        ->where('table.metas.type = ?', 'tag')
+                );
+            } catch (Throwable $e) {
+                return array();
+            }
+
+            $counts = array();
+
+            foreach ($rows as $row) {
+                $name = (string) $row['name'];
+
+                if ('' === $name) {
+                    continue;
+                }
+
+                $counts[$name] = (isset($counts[$name]) ? $counts[$name] : 0) + 1;
+            }
+
+            if (empty($counts)) {
+                return array();
+            }
+
+            arsort($counts);
+
+            return array_slice(array_keys($counts), 0, $limit);
         }
 
         /* ============================================================== */
@@ -646,11 +1013,12 @@ CODE;
                 . '#sp-repair-hooks code{font-family:Menlo,Monaco,Consolas,monospace;font-size:12px}'
                 . '</style>'
                 . '<p><b>检测到搜索钩子缺失，已自动补回。</b></p>'
-                . '<p>路由只是「把请求送进来」，真正接管查询的是三个 '
-                . '<code>Widget_Archive</code> 回调（<code>search</code> / <code>searchHandle</code> / '
-                . '<code>footer</code>），它们同样只在「启用插件」时写进 <code>plugins</code> 行。'
-                . '缺了不会报错，只会让搜索变成「路由在、引擎不在」——'
-                . '核心会拿 <code>sp…</code> 词元去搜，静默返回 0 条。</p>'
+                . '<p>路由只是「把请求送进来」，真正接管查询和摘要的是四个回调：'
+                . '<code>Widget_Archive</code> 的 <code>search</code> / <code>searchHandle</code> / '
+                . '<code>footer</code>，以及 <code>Widget\Base\Contents</code> 的 <code>excerpt</code>。'
+                . '它们同样只在「启用插件」时写进 <code>plugins</code> 行（升级换文件不会自动补）。'
+                . '缺了不会报错：搜索会变成「路由在、引擎不在」——'
+                . '核心拿 <code>sp…</code> 词元去搜，静默返回 0 条。</p>'
                 . '<p>本次无需任何操作；刷新一次前台页面即可恢复。</p>'
                 . '</div>';
         }

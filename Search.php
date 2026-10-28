@@ -21,7 +21,7 @@ require_once dirname(__FILE__) . '/Engine.php';
  * 编码放在这里（服务端）做，所以**不依赖 JS**。
  *
  * @package SearchPlus
- * @version 1.0.5
+ * @version 1.0.6
  */
 class SearchPlus_Search extends Typecho_Widget
 {

@@ -38,7 +38,7 @@ require_once dirname(__FILE__) . '/compat.php';
  * （见 applyConditions()），所以**主题样式一点没变**。
  *
  * @package SearchPlus
- * @version 1.0.5
+ * @version 1.0.6
  */
 class SearchPlus_Engine
 {
@@ -346,16 +346,15 @@ class SearchPlus_Engine
     }
 
     /**
-     * 自己建一条搜索查询
+     * 自己建一条搜索查询（精确匹配）
      *
      * 【为什么要自己建】注册了 `search` 钩子之后，核心认为「插件已经把结果压好了」，
-     * 于是 `Archive::execute()` 会在 `if ($hasPushed) { return; }` 处**直接返回、根本不查库**
-     * （实测：钩子里条件加得对、页面却一条不剩）。所以接管搜索就得连查询一起做：
-     * 自己建查询 → `setCountSql()` 给它算总数 → `query()` 压栈 → 主题照常 `$this->next()` 渲染。
+     * 于是 `Archive::execute()` 会在 `if ($hasPushed) { return; }` 处**直接返回、根本不查库**。
+     * 所以接管搜索就得连查询一起做：自己建查询 → `setCountSql()`/`setTotal()` 给它算总数
+     * → `query()` 压栈 → 主题照常 `$this->next()` 渲染。
      *
-     * 基础条件与核心 `Archive::select()` / `searchHandle()` 同口径：
-     * 状态（登录用户多一个自己的私密）、`created < now`、密码保护、`type = 'post'`；
-     * 匹配部分换成我们的「多词 AND、顺序无关、LIKE 转义」。
+     * 基础条件与核心 `Archive::select()` / `searchHandle()` 同口径（见 applyBase）；
+     * 匹配部分：多词 AND、顺序无关、标题或正文、**字面子串**（不用 LIKE，见 matchExpr）。
      *
      * @param Widget_Archive $archive
      * @param string         $keyword 原文关键词
@@ -370,7 +369,45 @@ class SearchPlus_Engine
         }
 
         $select = $db->select('table.contents.*')->from('table.contents');
+        self::applyBase($select, $db);
 
+        $words = self::words($keyword);
+
+        if (empty($words)) {
+            // 没有可用关键词：给一条永远不成立的条件，免得把全站文章列出来
+            $select->where('1 = 0');
+
+            return $select;
+        }
+
+        $driver = self::driver($db);
+
+        foreach ($words as $word) {
+            // 顺序无关：每个词都必须出现（AND），出现在标题或正文都算
+            $select->where(
+                '(' . self::matchExpr('table.contents.title', $driver)
+                    . ' OR ' . self::matchExpr('table.contents.text', $driver) . ')',
+                $word,
+                $word
+            );
+        }
+
+        $select->where('table.contents.type = ?', 'post');
+
+        return $select;
+    }
+
+    /**
+     * 基础过滤条件（状态 / 定时发布 / 密码 / 登录可见性）
+     *
+     * 与核心 `searchHandle()` 完全同口径，抽出来给「精确查询」和「宽松预筛」共用。
+     *
+     * @param Typecho_Db_Query $select
+     * @param Typecho_Db       $db
+     * @return Typecho_Db_Query
+     */
+    public static function applyBase($select, $db)
+    {
         /*
          * 登录状态（决定私密文章与加密文章的可见性，与核心一致）
          *
@@ -429,41 +466,251 @@ class SearchPlus_Engine
             $select->where("table.contents.password IS NULL OR table.contents.password = ''");
         }
 
-        $words = self::words($keyword);
-
-        if (empty($words)) {
-            // 没有可用关键词：给一条永远不成立的条件，免得把全站文章列出来
-            $select->where('1 = 0');
-
-            return $select;
-        }
-
-        foreach ($words as $word) {
-            // 顺序无关：每个词都必须出现（AND），出现在标题或正文都算
-            $select->where(
-                '(table.contents.title LIKE ? OR table.contents.text LIKE ?)',
-                '%' . self::escapeLike($word) . '%',
-                '%' . self::escapeLike($word) . '%'
-            );
-        }
-
-        $select->where('table.contents.type = ?', 'post');
-
         return $select;
     }
 
     /**
-     * LIKE 通配符转义（核心自己的搜索是不转义的，顺手修掉）
+     * 当前数据库驱动（mysql / sqlite / pgsql）
      *
-     * @param string $value
+     * @param Typecho_Db $db
      * @return string
      */
-    public static function escapeLike($value)
+    public static function driver($db)
     {
-        return str_replace(
-            array('\\', '%', '_'),
-            array('\\\\', '\\%', '\\_'),
-            (string) $value
+        try {
+            return strtolower((string) $db->getAdapter()->getDriver());
+        } catch (Throwable $e) {
+            return 'mysql';
+        }
+    }
+
+    /**
+     * 「包含这个子串」的 SQL 片段（只带一个占位符，参数就是关键词本身）
+     *
+     * 【为什么不用 LIKE】
+     * LIKE 要自己转义 `%` / `_`，而转义符在不同库上不一样：
+     * MySQL / PgSQL 默认是反斜杠，SQLite 默认**没有**转义符 ——
+     * `ESCAPE` 子句又被 Typecho 的 `Query::filterColumn()` 当成列名加引号（实测报 1064），
+     * 所以写不出跨库一致的 LIKE。
+     * `INSTR()` / `STRPOS()` 是纯子串查找，没有通配符概念，天然不需要转义：
+     * 搜 `100%`、`a_b`、`C++` 都是字面匹配。
+     *
+     * 大小写：MySQL 的比较走排序规则（本站为 ci），直接用；
+     * 其它驱动用 LOWER() 包一层。
+     *
+     * @param string $column
+     * @param string $driver
+     * @return string
+     */
+    public static function matchExpr($column, $driver)
+    {
+        if ('pgsql' === $driver) {
+            return 'STRPOS(LOWER(' . $column . '), LOWER(?)) > 0';
+        }
+
+        if ('mysql' === $driver) {
+            return 'INSTR(' . $column . ', ?) > 0';
+        }
+
+        return 'INSTR(LOWER(' . $column . '), LOWER(?)) > 0';
+    }
+
+    /**
+     * 条数（与核心 `Widget\Base\Contents::size()` 同口径）
+     *
+     * 多词 AND 时同一篇可能被多条条件命中，所以必须 DISTINCT。
+     *
+     * @param Typecho_Db       $db
+     * @param Typecho_Db_Query $select
+     * @return int
+     */
+    public static function countRows($db, $select)
+    {
+        $row = $db->fetchObject(
+            $select->select(array('COUNT(DISTINCT table.contents.cid)' => 'num'))
+                ->from('table.contents')
+                ->cleanAttribute('group')
         );
+
+        return $row ? intval($row->num) : 0;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 宽松兜底：忽略标点 / 空白的再匹配                                   */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 被视为「标点/格式噪音」的字符（宽松匹配时从两边都去掉）
+     *
+     * 含中文标点、常见成对符号、排版用的省略号/破折号/间隔号，
+     * 以及 Markdown 的 `*` `#` `` ` `` `>`（正文里经常夹在句子中间，见下）。
+     *
+     * @return array
+     */
+    public static function punctuation()
+    {
+        return array(
+            ' ', '　', "\t", "\n", "\r",
+            '。', '，', '、', '；', '：', '？', '！', '·',
+            '《', '》', '〈', '〉', '（', '）', '【', '】',
+            '「', '」', '『', '』', '“', '”', '‘', '’',
+            '…', '—', '～', '＊', '*', '#', '`', '>',
+        );
+    }
+
+    /**
+     * 去掉标点与所有空白（关键词侧）
+     *
+     * @param string $text
+     * @return string
+     */
+    public static function stripPunctuation($text)
+    {
+        $text = (string) $text;
+
+        if ('' === $text) {
+            return '';
+        }
+
+        $text = str_replace(self::punctuation(), '', $text);
+        $plain = preg_replace('/[\s\x{3000}]+/u', '', $text);
+
+        return is_string($plain) ? $plain : '';
+    }
+
+    /**
+     * 正文侧规范化：去 HTML 标签 → 去标点/空白
+     *
+     * @param string $text
+     * @return string
+     */
+    public static function normalizeText($text)
+    {
+        return self::stripPunctuation(strip_tags((string) $text));
+    }
+
+    /**
+     * 取若干等距的短窗口（用于便宜地预筛候选行）
+     *
+     * @param string $text
+     * @param int    $size
+     * @param int    $max
+     * @return array
+     */
+    public static function windows($text, $size = 2, $max = 6)
+    {
+        $text = (string) $text;
+        $len  = function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text);
+        $out  = array();
+
+        for ($i = 0; $i + $size <= $len && count($out) < $max; $i += $size) {
+            $w = function_exists('mb_substr')
+                ? mb_substr($text, $i, $size, 'UTF-8')
+                : substr($text, $i, $size);
+
+            if ('' !== $w && !in_array($w, $out, true)) {
+                $out[] = $w;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * 宽松检索：先按短窗口预筛，再用 PHP 做「去标点后包含」的精确判断
+     *
+     * 【为什么不用 SQL 里堆 REPLACE】实测 349 篇 × 10KB 时，
+     * 17 层 REPLACE 在 SQL 里做整列匹配要 130~270ms（还要跑两次：count + 取行）；
+     * 而「两个字的窗口」预筛只要 ~25ms，候选行通常只有个位数，
+     * 再在 PHP 里规范化比对，总耗时 ~30ms。
+     *
+     * 【为什么可能需要它】用户记得的是**读起来连续的句子**，而库里是
+     * Markdown/HTML：`江城子·浣花溪上见卿卿`、`江畔何人初见月？江月何年初照人？`、
+     * `伦理炸药：**一个人……`。整串精确匹配会一条都搜不到（实测就是这么 0 的）。
+     *
+     * 只在「精确查询 0 条」时调用，且要求关键词去标点后至少 4 个字。
+     *
+     * @param Typecho_Db $db
+     * @param string     $keyword
+     * @param int        $limit   候选行上限（防止大站一次拉太多）
+     * @return array 命中的 cid（按创建时间倒序）
+     */
+    public static function relaxedCids($db, $keyword, $limit = 400)
+    {
+        $needle = self::stripPunctuation($keyword);
+        $len    = function_exists('mb_strlen') ? mb_strlen($needle, 'UTF-8') : strlen($needle);
+
+        if ($len < 4) {
+            return array();
+        }
+
+        $windows = self::windows($needle, 2, 6);
+
+        if (empty($windows)) {
+            return array();
+        }
+
+        $driver = self::driver($db);
+        $exprs  = array();
+
+        foreach ($windows as $w) {
+            $exprs[] = self::matchExpr('table.contents.text', $driver);
+        }
+
+        try {
+            $select = $db->select(
+                'table.contents.cid',
+                'table.contents.title',
+                'table.contents.text',
+                'table.contents.created'
+            )->from('table.contents');
+
+            self::applyBase($select, $db);
+            $select->where('table.contents.type = ?', 'post');
+
+            // where() 的可变参数要逐个传，不能把数组当成一个参数
+            call_user_func_array(
+                array($select, 'where'),
+                array_merge(array('(' . implode(' OR ', $exprs) . ')'), $windows)
+            );
+
+            $select->order('table.contents.created', SP_SORT_DESC);
+            $select->limit(intval($limit));
+
+            $rows = $db->fetchAll($select);
+        } catch (Throwable $e) {
+            return array();
+        }
+
+        $cids = array();
+
+        foreach ($rows as $row) {
+            $haystack = self::normalizeText($row['title'] . ' ' . $row['text']);
+
+            if (false !== mb_stripos($haystack, $needle, 0, 'UTF-8')) {
+                $cids[] = intval($row['cid']);
+            }
+        }
+
+        return $cids;
+    }
+
+    /**
+     * 按 cid 取结果（宽松匹配用；顺序由调用方再排）
+     *
+     * @param Typecho_Db $db
+     * @param array      $cids
+     * @return Typecho_Db_Query|null
+     */
+    public static function selectByCids($db, array $cids)
+    {
+        $ids = array_values(array_unique(array_map('intval', $cids)));
+
+        if (empty($ids)) {
+            return NULL;
+        }
+
+        return $db->select('table.contents.*')->from('table.contents')
+            ->where('table.contents.cid IN (' . implode(',', $ids) . ')');
     }
 }

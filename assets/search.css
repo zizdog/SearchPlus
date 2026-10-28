@@ -108,3 +108,32 @@
         padding: 12px 12px;
     }
 }
+
+/* 0 结果页：说明 + 建议 + 热门标签 */
+.sp-empty-tip {
+    margin: 6px 0 12px;
+    color: rgba(128, 128, 128, 1);
+    font-size: 13px;
+}
+
+.sp-tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sp-tag-item,
+.sp-tag-item + .sp-tag-item {
+    border-top: 0;
+}
+
+.sp-tag-item .sp-extra-link {
+    padding: 4px 10px;
+    border: 1px solid rgba(128, 128, 128, .28);
+    border-radius: 999px;
+    font-size: 13px;
+}
+
+.sp-tag-item .sp-extra-link:hover {
+    border-color: rgba(128, 128, 128, .5);
+}

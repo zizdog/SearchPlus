@@ -57,6 +57,8 @@ function sp_alias_map()
         // 插件与异常
         'Typecho\\Plugin'           => 'Typecho_Plugin',
         'Typecho\\Plugin\\Exception' => 'Typecho_Plugin_Exception',
+        // 越界搜索页要抛 404（与核心同语义），两个版本都打通
+        'Typecho\\Widget\\Exception' => 'Typecho_Widget_Exception',
 
         // 后台与 Helper
         'Utils\\Helper'    => 'Helper',
