@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.4
+ * @version 1.0.5
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.4';
+        const VERSION = '1.0.5';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -47,6 +47,9 @@ namespace {
 
         /** @var bool 本次请求是否补回过路由（设置页会据此给一句提示） */
         private static $routeRepaired = false;
+
+        /** @var bool 本次请求是否补回过钩子（设置页会据此给一句提示） */
+        private static $hooksRepaired = false;
 
         /* ============================================================== */
         /* 启停                                                            */
@@ -98,7 +101,7 @@ namespace {
         }
 
         /**
-         * 插件是否**真的可用**（已启用 + 路由已注册）
+         * 插件是否**真的可用**（已启用 + 路由已注册 + 钩子已注册）
          *
          * 主题应该用这个，而不是 `class_exists()`：
          * 只看「启用」还不够 —— 路由是**启用那一刻**写进 `routingTable` 的，
@@ -106,6 +109,12 @@ namespace {
          * 就会出现「插件是启用的、`/search` 却不存在」的状态，
          * 搜索框照样会把用户送进死路（Typecho 会抛 Router\Exception，
          * 开着 debug 时更会返回 200 的错误页，PJAX 只看到「没有 #main」）。
+         *
+         * 只看路由也不够 —— 钩子是启用那一刻写进 `plugins` 行的 `handles` 里的，
+         * 那一行若被从旧快照恢复 / 手改过，就会出现「路由在、回调不在」：
+         * `/search/` 由跳板 302 到核心搜索页，但引擎不接管，
+         * 核心拿 `sp...` 词元去搜 → **静默 0 结果**（比 404 更难发现）。
+         * 所以这里连钩子一起校验，缺了就让主题回落原生 `?s=` 搜索。
          *
          * @return bool
          */
@@ -116,7 +125,94 @@ namespace {
             }
 
             try {
-                return null !== Typecho_Router::get(self::ROUTE_JUMP);
+                if (NULL === Typecho_Router::get(self::ROUTE_JUMP)) {
+                    return false;
+                }
+            } catch (Throwable $e) {
+                return false;
+            }
+
+            return self::isEngineHooked();
+        }
+
+        /**
+         * 搜索引擎的钩子是否真的注册了
+         *
+         * 从 `Plugin::export()['handles']` 里找 `Widget_Archive:search` 这类键，
+         * 且回调必须指向本插件。键名与版本有关（`Widget_Archive` / `Widget\Archive`），
+         * 所以按后缀 `:search` 匹配，不写死前缀。
+         *
+         * @return bool
+         */
+        protected static function isEngineHooked()
+        {
+            try {
+                $export  = Typecho_Plugin::export();
+                $handles = (isset($export['handles']) && is_array($export['handles']))
+                    ? $export['handles']
+                    : array();
+
+                foreach ($handles as $key => $callbacks) {
+                    $key = (string) $key;
+
+                    // 只认 `<Widget>:search`，不认 `:searchHandle` / `:search_page`
+                    if (strlen($key) < 7 || 0 !== substr_compare($key, ':search', -7)) {
+                        continue;
+                    }
+
+                    if (empty($callbacks)) {
+                        continue;
+                    }
+
+                    $list = is_string($callbacks) ? array($callbacks) : (array) $callbacks;
+
+                    foreach ($list as $callback) {
+                        $name = is_array($callback)
+                            ? implode('::', array_map('strval', $callback))
+                            : (string) $callback;
+
+                        if (false !== strpos($name, 'SearchPlus_Plugin')) {
+                            return true;
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                return false;
+            }
+
+            return false;
+        }
+
+        /**
+         * 钩子自愈：`plugins` 行里 `activated` 有本插件、`handles` 却丢了 → 补回来
+         *
+         * 【为什么会丢】和路由一样，回调只在「启用插件」那一刻写进 `plugins` 行的
+         * `handles`。行被整行恢复（旧快照）、手改过、或从别的站点拷过来时，
+         * 就会出现「activated 里有、handles 里没有」：路由还在、搜索框照样指向
+         * `/search/`，但引擎根本不接管 → 静默 0 结果。
+         *
+         * 【怎么做】用与核心 `Edit::activate()` 完全相同的两步：
+         * `installHooks()` 注册到内存 → `Plugin::activate()` 记进 activated（停用时才删得掉）
+         * → 把整个 `Plugin::export()` 写回 `plugins` 行（JSON，与核心一致）。
+         *
+         * 只在「已启用 + 钩子缺失」时动手；在后台打开设置页时检查一次，
+         * 不碰前台（前台写库不划算，而且这时 isReady() 已让主题回落原生搜索）。
+         *
+         * @return bool 本次是否真的补过
+         */
+        public static function repairHooks()
+        {
+            try {
+                if (!self::isActive() || self::isEngineHooked()) {
+                    return false;
+                }
+
+                self::installHooks();
+                Typecho_Plugin::activate('SearchPlus');
+                Helper::setOption('plugins', Typecho_Plugin::export());
+                self::$hooksRepaired = true;
+
+                return true;
             } catch (Throwable $e) {
                 return false;
             }
@@ -502,7 +598,7 @@ CODE;
                 . '<pre><code>' . $esc($snippetCheck) . '</code></pre>'
                 . '<p class="sp-help-muted">另外：本插件的<b>路由与钩子是在「启用插件」时写入配置的</b>，'
                 . '以后升级插件若发现搜索没走插件路由，把插件「停用 → 启用」一次即可'
-                . '（1.0.4 起打开本页也会自动检查并补回，见下方提示）。</p>'
+                . '（打开本页会自动检查路由与钩子并补回，见下方提示）。</p>'
                 . '</div>';
         }
 
@@ -529,6 +625,33 @@ CODE;
                 . '丢了不会报错，只会让搜索框指向死路 —— 所以主题那边请用 '
                 . '<code>SearchPlus_Plugin::isReady()</code> 判断，缺路由时自动回落原生搜索。</p>'
                 . '<p>本次无需任何操作；刷新一次前台页面即可走插件路由。</p>'
+                . '</div>';
+        }
+
+        /**
+         * 「已自动补回钩子」提示块（只在本次真的补过时输出）
+         *
+         * @return string
+         */
+        public static function hooksRepairedHtml()
+        {
+            return '<div id="sp-repair-hooks" class="sp-repair">'
+                . '<style>'
+                . '#sp-repair-hooks{--sp-bd:var(--ad-line,#e3e6ea);--sp-bg:var(--ad-surface-alt,rgba(128,128,128,.06));'
+                . '--sp-fg:var(--ad-fg,#444);--sp-ac:var(--ad-accent,#467b96);'
+                . 'border:1px solid var(--sp-bd);border-left:3px solid var(--sp-ac);border-radius:6px;'
+                . 'padding:12px 16px;margin:0 0 18px;background:var(--sp-bg);color:var(--sp-fg);'
+                . 'line-height:1.8;font-size:13px}'
+                . '#sp-repair-hooks p{margin:4px 0}'
+                . '#sp-repair-hooks code{font-family:Menlo,Monaco,Consolas,monospace;font-size:12px}'
+                . '</style>'
+                . '<p><b>检测到搜索钩子缺失，已自动补回。</b></p>'
+                . '<p>路由只是「把请求送进来」，真正接管查询的是三个 '
+                . '<code>Widget_Archive</code> 回调（<code>search</code> / <code>searchHandle</code> / '
+                . '<code>footer</code>），它们同样只在「启用插件」时写进 <code>plugins</code> 行。'
+                . '缺了不会报错，只会让搜索变成「路由在、引擎不在」——'
+                . '核心会拿 <code>sp…</code> 词元去搜，静默返回 0 条。</p>'
+                . '<p>本次无需任何操作；刷新一次前台页面即可恢复。</p>'
                 . '</div>';
         }
 
@@ -596,15 +719,38 @@ CODE;
                             : json_decode($current, true);
 
                         if (!is_array($decoded) || array() === $decoded) {
-                            $db->query(
-                                $db->update('table.options')
-                                    ->rows(array('value' => $json))
-                                    ->where('name = ?', $name)
-                                    ->where('user = ?', $row['user'])
-                            );
-                            if (null === $needFix) {
-                                $needFix = $json;
-                            }
+                            // 空行 / 坏行 → 整行换成默认值
+                            $fixed = $json;
+                        } else {
+                            /*
+                             * 键集合与当前版本不一致时**裁剪**（旧版本残留键、手改库）。
+                             *
+                             * 【为什么必须裁】核心渲染设置页是
+                             *     foreach ($options as $key => $val) $form->getInput($key)->value($val);
+                             * `getInput()` 对未声明的键返回 null，`->value()` 直接
+                             * 「Call to a member function value() on null」→ 整页 500。
+                             * 保存路径的 sanitize() 只管写，管不到库里已有的旧键。
+                             */
+                            $clean = self::sanitize($decoded);
+
+                            $fixed = ($clean == $decoded)
+                                ? null
+                                : json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                        }
+
+                        if (null === $fixed) {
+                            continue;
+                        }
+
+                        $db->query(
+                            $db->update('table.options')
+                                ->rows(array('value' => $fixed))
+                                ->where('name = ?', $name)
+                                ->where('user = ?', $row['user'])
+                        );
+
+                        if (null === $needFix) {
+                            $needFix = $fixed;
                         }
                     }
                 }
@@ -649,6 +795,15 @@ CODE;
             self::repairRoute();
 
             /*
+             * 【第三步】检查钩子。
+             * 回调写在 `plugins` 行的 handles 里，同样只在启用那一刻写一次；
+             * 行被整行恢复/手改过就会出现「activated 有、handles 没有」——
+             * 路由在、搜索框指向 /search/，但引擎不接管 → 静默 0 结果。
+             * 缺失才补（与核心激活时同样的两步），只写一次库。
+             */
+            self::repairHooks();
+
+            /*
              * 最上面先放「怎么用」——用户装完插件最需要的就是这几行接线代码，
              * 示例直接用本站主题（GardenWalk）的真实写法，并写成**判断式**：
              * 插件没启用时自动回落到 Typecho 原生搜索，不会 404。
@@ -671,6 +826,17 @@ CODE;
                     $note = new $helpLayout();
                     $note->html(self::routeRepairedHtml());
                     $form->addItem($note);
+                } catch (Throwable $e) {
+                    // 同上，忽略
+                }
+            }
+
+            // 本次补过钩子 → 同样说明一句（症状比路由缺失更隐蔽）
+            if (self::$hooksRepaired && '' !== $helpLayout) {
+                try {
+                    $hookNote = new $helpLayout();
+                    $hookNote->html(self::hooksRepairedHtml());
+                    $form->addItem($hookNote);
                 } catch (Throwable $e) {
                     // 同上，忽略
                 }
@@ -718,13 +884,24 @@ CODE;
         public static function configHandle($settings, $isInit = false)
         {
             /*
-             * 【回填阶段必须返回假值】核心的启用流程是：
+             * 【回填阶段返回假值 —— 注意返回值在 1.3 里其实被忽略了】
+             *
+             * 旧版（1.2 时代）核心的启用流程是：
              *     if ($options && !$configHandle($pluginName, $options, true)) {
-             *         configPlugin($pluginName, $options);      // ← 写默认值
+             *         configPlugin($pluginName, $options);      // 写默认值
              *     }
-             * 也就是说：插件在这里返回「真」的话，核心就**不写**默认配置了。
-             * 结果是设置页打不开（`Config::config()` 拿不到配置行直接 500）——
-             * 我第一版用 CLI 启用时就踩了这个坑（返回了数组 = 真值）。
+             * 所以那时插件必须返回「假」才能让核心写默认配置。
+             *
+             * 1.3 的 `Widget\Plugins\Edit::configHandle()`（var/Widget/Plugins/Edit.php）
+             * 是「调用插件回调 → 无条件 return true」，返回值不再参与判断：
+             *     if (method_exists($className, 'configHandle')) {
+             *         call_user_func([$className, 'configHandle'], $settings, $isInit);
+             *         return true;
+             *     }
+             * 也就是说核心**不会**替我们写默认配置 —— 这一行由下面自己
+             * `repairConfigRow()` 补齐（写库 + 同步内存 Options）。
+             *
+             * 返回值仍然返回 false：对 1.2 兼容无害，也表明「本次没有额外保存动作」。
              */
             if ($isInit) {
                 /*

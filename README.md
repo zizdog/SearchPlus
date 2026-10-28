@@ -2,7 +2,7 @@
 
 让 Typecho 的站内搜索**搜得准**，并且**不改核心、不换页面、不脱离主题**。
 
-- 版本：1.0.4
+- 版本：1.0.5
 - 环境：Typecho 1.2 / 1.3（本站为 1.3.0）
 - 依赖：**无**（可选配合「轻言 Qingyan」插件，装上就顺带列出轻言命中）
 
@@ -66,7 +66,7 @@ Typecho 的搜索把关键词交给两个过滤器（`Widget\Archive::searchHand
 2. 主题搜索框的 `action` 指到 `/search/`，并**做一次降级判断**（插件没启用时走原生）：
 
 ```php
-<?php $gardenSearchAction = class_exists('SearchPlus_Plugin')
+<?php $gardenSearchAction = (class_exists('SearchPlus_Plugin') && SearchPlus_Plugin::isReady())
     ? rtrim($this->options->siteUrl, '/') . '/search/'
     : $this->options->siteUrl; ?>
 <form method="get" action="<?php echo htmlspecialchars($gardenSearchAction, ENT_QUOTES, 'UTF-8'); ?>" role="search">
@@ -74,7 +74,9 @@ Typecho 的搜索把关键词交给两个过滤器（`Widget\Archive::searchHand
 </form>
 ```
 
-未启用插件时 `action` 就是站点根 → 原生 `?s=` 搜索，**不会 404**。
+判据用 `isReady()`（已启用 + 路由在 + 钩子在），不要只用 `class_exists()`：
+类能加载不代表启用过；就算启用了，路由或钩子也可能因配置行被恢复/手改而丢失。
+不满足时 `action` 就是站点根 → 原生 `?s=` 搜索，**不会 404**。
 （`/search` 这个精确路径与核心的 `/search/关键词/` 不冲突，两个可以并存。）
 
 3. （可选）想在搜索结果页里**附带轻言命中**：把下面这行放进主题的搜索模板
@@ -102,8 +104,14 @@ Typecho 的搜索把关键词交给两个过滤器（`Widget\Archive::searchHand
 
 ## 已知边界
 
-- 主题搜索框的 `action` 指向插件注册的路由：**停用插件后**它会 404。
-  要么按上面的 `class_exists` 写法降级，要么停用后把 `action` 改回站点根。
+- 主题搜索框的 `action` 指向插件注册的路由。按上面 `isReady()` 的写法接线时，
+  插件停用 / 路由或钩子丢失都会**自动回落**原生搜索，不会 404；
+  只有用裸 `class_exists()` 判断的写法，停用后才会 404。
+- 插件**只在启用那一刻**把路由写进 `routingTable`、把回调写进 `plugins` 行。
+  这两处都可能因为「拷文件 + 手改插件列表」「从旧快照恢复」「手改库」而丢失：
+  后台打开一次设置页会自动补回（1.0.4 补路由、1.0.5 补钩子），并显示提示。
+- 老式书签 `/?s=信任 背叛` 走的是 Typecho 原生链路（不经过本插件的跳板），
+  中文多词仍会被核心过滤器吃掉空格 → 建议统一用搜索框（`/search/`）。
 - 单个关键词限 32 字、最多 6 个词；整串超过 60 字节会被截断（结果页会提示
   「关键词太长，只用了前一部分」）—— 这是 Typecho 关键词 128 字符上限带来的。
 - 只搜**文章正文与标题**（不搜附件、不搜评论），只搜 `publish`（作者登录时含自己的私密文章）。
@@ -121,6 +129,23 @@ SearchPlus/
 ```
 
 ## 变更
+
+### 1.0.5
+
+- **钩子自愈**：后台打开设置页时除了检查路由，还会检查三个 `Widget_Archive` 回调
+  （`search` / `searchHandle` / `footer`）是否真的注册在 `plugins` 行的 `handles` 里，
+  缺失就按核心激活流程补回（`repairHooks()`），并显示一条提示。
+  缺钩子的症状比缺路由隐蔽：路由还在、搜索框照样指向 `/search/`，
+  但引擎不接管，核心拿 `sp…` 词元去搜 → **静默 0 结果**、标题显示十六进制。
+- **`isReady()` 加固**：判据从「已启用 + 路由在」升级为「已启用 + 路由在 + 钩子在」，
+  钩子缺失时主题自动回落原生 `?s=` 搜索（1.0.3 只防了路由缺失这一半）。
+- **配置行裁剪**：`plugin:SearchPlus` 里若残留当前版本未声明的键（旧版本、手改库），
+  打开设置页会被核心的 `getInput($key)->value()` 打挂（整页 500）。
+  现在自愈时用 `sanitize()` 裁掉未知键再写回，和保存路径的行为一致。
+- **文档**：README 的接线示例同步成 `isReady()` 写法；补「已知边界」
+  （老式 `?s=` 书签对中文多词无效）；修正 `configHandle()` 里对 Typecho 1.3
+  返回值的过时说明（1.3 核心其实忽略插件返回值，配置行由本插件自己写）。
+- 各文件 `@version` 统一到 1.0.5（此前 `Engine.php` / `Search.php` 还停在 1.0.1）。
 
 ### 1.0.4
 
