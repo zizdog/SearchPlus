@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.6
+ * @version 1.0.7
  * @link    https://zizdog.com
  */
 
@@ -28,7 +28,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.6';
+        const VERSION = '1.0.7';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -743,12 +743,19 @@ namespace {
     <?php if (!empty($rows)) { ?>
     <div class="sp-extra-head">
         <span class="sp-extra-title">轻言里也有 <b><?php echo intval($qyTotal); ?></b> 条相关</span>
-        <a class="sp-extra-more" href="<?php echo $esc(self::qingyanSearchUrl($keyword, $front)); ?>">在轻言里看<?php echo $qyTotal > count($rows) ? '全部' : ''; ?> &rarr;</a>
+        <?php /*
+         * 【data-no-ajax / data-no-pjax 不能省】轻言前台页（/qingyan）是**独立页**，
+         * 没有主题的 `#main` 容器。GardenWalk 的 PJAX 会拦所有同源链接，取回页面后
+         * 找不到 `#main` 就抛错；而它的 `_replaceContent()` 在 setTimeout 里抛，
+         * 落不进 Promise 的 catch，于是 `#main` 停在 `opacity:0` —— 用户看到的是**空白页**。
+         * 加上这两个属性，PJAX 直接跳过，浏览器做整页跳转，独立页才能正常显示。
+         */ ?>
+        <a class="sp-extra-more" data-no-ajax data-no-pjax href="<?php echo $esc(self::qingyanSearchUrl($keyword, $front)); ?>">在轻言里看<?php echo $qyTotal > count($rows) ? '全部' : ''; ?> &rarr;</a>
     </div>
     <ul class="sp-extra-list">
         <?php foreach ($rows as $row) { ?>
         <li class="sp-extra-item">
-            <a class="sp-extra-link" href="<?php echo $esc($front . '#qy-' . intval($row['id'])); ?>">
+            <a class="sp-extra-link" data-no-ajax data-no-pjax href="<?php echo $esc($front . '#qy-' . intval($row['id'])); ?>">
                 <span class="sp-extra-time"><?php echo $esc(self::timeAgo($row['created'])); ?></span>
                 <span class="sp-extra-text"><?php echo self::snippet($row['content'], $keyword); ?></span>
             </a>
