@@ -38,7 +38,7 @@ require_once dirname(__FILE__) . '/compat.php';
  * （见 applyConditions()），所以**主题样式一点没变**。
  *
  * @package SearchPlus
- * @version 1.0.6
+ * @version 1.0.8
  */
 class SearchPlus_Engine
 {

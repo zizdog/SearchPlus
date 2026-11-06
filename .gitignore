@@ -12,3 +12,6 @@ fatal_debug.log
 
 # Node
 node_modules/
+
+# 在线更新临时目录
+.updater-tmp-*

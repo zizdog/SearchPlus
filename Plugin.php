@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.7
+ * @version 1.0.8
  * @link    https://zizdog.com
  */
 
@@ -20,6 +20,7 @@ namespace {
     require_once __DIR__ . '/compat.php';
     require_once __DIR__ . '/Engine.php';
     require_once __DIR__ . '/Search.php';
+    require_once __DIR__ . '/updater.php';
 
     if (class_exists('SearchPlus_Plugin_Base', false)) {
         return;
@@ -28,7 +29,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.7';
+        const VERSION = '1.0.8';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
@@ -1237,6 +1238,76 @@ CODE;
                 _t('默认 5 条，后面跟一个「在轻言里看全部 →」的链接。')
             );
             $form->addInput($limit);
+
+            /*
+             * 在线更新提示条（新版本 → 黄条 +「一键更新」；否则绿条 +「立即检查」）。
+             *
+             * 走的是站内标准（`.ai-notes/handoff/UPDATE-STANDARD.md`）：
+             * GET 动作 + 固定后缀 token + Notice + 302 回本页，不用 AJAX。
+             * 拿不到 Updater（Typecho 1.2 / 类未加载）时什么都不输出。
+             */
+            echo self::updateNotice();
+        }
+
+        /**
+         * 在线更新器（plugin 模式）
+         *
+         * 依赖同目录 `updater.php`（站内标准参考实现，命名空间改成 `SearchPlus`
+         * 以免和 Qingyan 复制的那份 `\Typecho\Updater` 撞类名）。
+         *
+         * @return \SearchPlus\Updater|false
+         */
+        public static function updater()
+        {
+            static $updater = NULL;
+
+            if (NULL !== $updater) {
+                return $updater;
+            }
+
+            $updater = false;
+
+            if (!class_exists('\SearchPlus\Updater')
+                || !class_exists('\Typecho\Widget')
+                || !defined('__TYPECHO_ROOT_DIR__')) {
+                return $updater;
+            }
+
+            try {
+                $updater = new \SearchPlus\Updater(array(
+                    'kind'          => 'plugin',
+                    'slug'          => 'searchplus',
+                    'version'       => self::VERSION,
+                    'root'          => __DIR__,
+                    'title'         => '搜索增强 SearchPlus',
+                    'action_prefix' => 'searchplus',
+                    'cache_dir'     => rtrim((string) __TYPECHO_ROOT_DIR__, '/') . '/usr/cache/updater',
+                ));
+            } catch (Throwable $e) {
+                $updater = false;
+            }
+
+            return $updater;
+        }
+
+        /**
+         * 设置页的更新提示 HTML（拿不到就返回空串）
+         *
+         * @return string
+         */
+        public static function updateNotice()
+        {
+            $updater = self::updater();
+
+            if (!$updater) {
+                return '';
+            }
+
+            try {
+                return (string) $updater->notice();
+            } catch (Throwable $e) {
+                return '';
+            }
         }
 
         /**
@@ -1632,6 +1703,25 @@ CODE;
     if (!class_exists('SearchPlus_Plugin', false)) {
         class SearchPlus_Plugin extends SearchPlus_Plugin_Base
         {
+        }
+    }
+
+    /*
+     * 在线更新动作：?searchplus-check=1 / ?searchplus-update=1
+     *
+     * 必须在任何输出之前处理（成功/失败都会 Notice + 302 回设置页）。
+     * 插件文件是后台渲染到「插件设置页」时才被 require 的，此时 302 仍然有效
+     * （实测与 Qingyan 的同一套写法一致）；动作本身有固定 token + 管理员校验。
+     */
+    if (defined('__TYPECHO_ADMIN__') && __TYPECHO_ADMIN__) {
+        try {
+            $spUpdater = SearchPlus_Plugin::updater();
+
+            if ($spUpdater) {
+                $spUpdater->handleAction();
+            }
+        } catch (Throwable $e) {
+            // 更新动作异常不能影响后台其它页面
         }
     }
 }
