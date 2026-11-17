@@ -1,5 +1,5 @@
 /*!
- * 搜索增强 SearchPlus — 结果页附加内容的样式
+ * 搜索增强 SearchPlus — 结果页提示（0 结果引导 / 宽松匹配说明）的样式
  *
  * 【刻意不依赖任何主题或其它插件的样式】
  *   颜色一律用 `currentColor` + 半透明灰（边框/底色），
@@ -25,7 +25,7 @@
     box-sizing: border-box;
 }
 
-/* 关键词被截断时的说明 */
+/* 提示条（关键词被截断 / 已忽略标点重新搜索） */
 .sp-extra-note {
     margin: 0 0 10px;
     padding: 6px 10px;
@@ -52,11 +52,6 @@
     margin: 0 0 10px;
 }
 
-.sp-extra-more {
-    margin-left: auto;
-    font-size: 13px;
-}
-
 .sp-extra-list {
     margin: 0;
     padding: 0;
@@ -76,30 +71,6 @@
 
 .sp-extra-link:hover {
     color: inherit;
-}
-
-.sp-extra-link:hover .sp-extra-text {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-}
-
-.sp-extra-time {
-    display: inline-block;
-    margin-right: 8px;
-    color: rgba(128, 128, 128, 1);
-    font-size: 12px;
-}
-
-.sp-extra-text {
-    font-size: 14px;
-}
-
-.sp-extra mark {
-    padding: 0 2px;
-    border-radius: 3px;
-    background: rgba(70, 123, 150, .18);
-    color: inherit;
-    font-weight: 600;
 }
 
 @media (max-width: 575px) {

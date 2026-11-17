@@ -2,12 +2,12 @@
 /**
  * 搜索增强 SearchPlus：让 Typecho 的站内搜索「搜得准」
  *
- * 与轻言是松耦合：装了轻言（`Qingyan_Model` 在）就顺带在结果页下面列一组轻言命中，
- * 没装就只列文章 —— 本插件不依赖轻言。
+ * 只做**文章**（标题 / 正文）的搜索；轻言（Qingyan）内容的搜索由轻言插件自己负责。
+ * 1.0.9 起移除「结果页列出轻言命中」及相关配置（`qingyanExtra` / `qingyanLimit`）。
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.8
+ * @version 1.0.9
  * @link    https://zizdog.com
  */
 
@@ -29,16 +29,13 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.8';
+        const VERSION = '1.0.9';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
 
         /** 跳板路由地址（精确路径，不会与核心 /search/关键词/ 抢） */
         const ROUTE_URL = '/search';
-
-        /** @var array 配置缓存 */
-        private static $optCache = array();
 
         /** @var bool 结果页里那段附加内容是否已经输出过 */
         private static $extraDone = false;
@@ -662,17 +659,19 @@ namespace {
         }
 
         /* ============================================================== */
-        /* 结果页附加内容（轻言命中，松耦合）                              */
+        /* 结果页附注（宽松兜底提示 / 截断提示 / 0 结果引导）              */
         /* ============================================================== */
 
         /**
-         * 在搜索结果页追加一段「轻言里也有 N 条」
+         * 搜索结果页的附加提示
          *
          * 主题模板里显式调用（推荐，位置最好，且**不需要重新启用插件**）：
          *
          *     <?php if (class_exists('SearchPlus_Plugin')) SearchPlus_Plugin::renderExtra($this); ?>
          *
-         * 没装/停用轻言时这里什么都不输出（本插件不依赖它）。
+         * 只输出三类提示：走了宽松兜底、关键词被截断、0 结果时的引导。
+         * **不再列出轻言命中**（1.0.9 起）：轻言内容的搜索由轻言插件自己负责，
+         * 本插件只做文章（标题/正文）搜索。
          *
          * @param Widget_Archive $archive
          * @return void
@@ -715,19 +714,16 @@ namespace {
                 return;
             }
 
-            $cut  = self::isTruncated();
-            $rows = self::qingyanRows($keyword);
+            $cut = self::isTruncated();
 
-            // 只有「被截断」或「走了宽松兜底」或「轻言有命中」时才需要这一块
-            if (empty($rows) && !$cut && !self::$relaxed) {
+            // 只有「被截断」或「走了宽松兜底」时才需要这一块
+            if (!$cut && !self::$relaxed) {
                 return;
             }
 
             self::$extraDone = true;
 
-            $qyTotal = self::qingyanTotal($keyword);
-            $front   = self::qingyanFrontUrl();
-            $esc     = function ($value) {
+            $esc = function ($value) {
                 return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
             };
 
@@ -740,29 +736,6 @@ namespace {
     <?php } ?>
     <?php if ($cut) { ?>
     <p class="sp-extra-note">关键词太长，只用了前一部分来搜索：<b><?php echo $esc($keyword); ?></b></p>
-    <?php } ?>
-    <?php if (!empty($rows)) { ?>
-    <div class="sp-extra-head">
-        <span class="sp-extra-title">轻言里也有 <b><?php echo intval($qyTotal); ?></b> 条相关</span>
-        <?php /*
-         * 【data-no-ajax / data-no-pjax 不能省】轻言前台页（/qingyan）是**独立页**，
-         * 没有主题的 `#main` 容器。GardenWalk 的 PJAX 会拦所有同源链接，取回页面后
-         * 找不到 `#main` 就抛错；而它的 `_replaceContent()` 在 setTimeout 里抛，
-         * 落不进 Promise 的 catch，于是 `#main` 停在 `opacity:0` —— 用户看到的是**空白页**。
-         * 加上这两个属性，PJAX 直接跳过，浏览器做整页跳转，独立页才能正常显示。
-         */ ?>
-        <a class="sp-extra-more" data-no-ajax data-no-pjax href="<?php echo $esc(self::qingyanSearchUrl($keyword, $front)); ?>">在轻言里看<?php echo $qyTotal > count($rows) ? '全部' : ''; ?> &rarr;</a>
-    </div>
-    <ul class="sp-extra-list">
-        <?php foreach ($rows as $row) { ?>
-        <li class="sp-extra-item">
-            <a class="sp-extra-link" data-no-ajax data-no-pjax href="<?php echo $esc($front . '#qy-' . intval($row['id'])); ?>">
-                <span class="sp-extra-time"><?php echo $esc(self::timeAgo($row['created'])); ?></span>
-                <span class="sp-extra-text"><?php echo self::snippet($row['content'], $keyword); ?></span>
-            </a>
-        </li>
-        <?php } ?>
-    </ul>
     <?php } ?>
 </div>
             <?php
@@ -878,11 +851,8 @@ namespace {
          */
         public static function defaults()
         {
-            return array(
-                // 结果页里是否顺带列出轻言命中（需要启用轻言插件；没装时自动跳过）
-                'qingyanExtra' => '1',
-                'qingyanLimit' => '5',
-            );
+            // 1.0.9 起没有配置项（轻言相关配置已移除）。保留空数组是为了复用自愈/裁剪逻辑。
+            return array();
         }
 
         /**
@@ -918,7 +888,7 @@ CODE;
 
             $snippetExtra = <<<'CODE'
 <?php
-// ②（可选）在搜索结果模板里追加「轻言命中」那一段。
+// ②（可选）在搜索结果模板里追加「没找到 / 已宽松匹配」这类提示。
 //    本站 GardenWalk 是 index.php，放在文章列表与分页之后。
 if (class_exists('SearchPlus_Plugin')) {
     SearchPlus_Plugin::renderExtra($this);
@@ -960,11 +930,12 @@ CODE;
                 . '<li>只要 <code>action</code> 指过来，搜索就会用本插件的精确引擎（多词 AND、符号不过滤、顺序无关）。</li>'
                 . '</ul>'
 
-                . '<h4>②（可选）在搜索结果模板里追加「轻言」命中</h4>'
-                . '<p>放在文章列表与分页<b>之后</b>（GardenWalk 是 <code>index.php</code>）：</p>'
+                . '<h4>②（可选）在搜索结果模板里追加提示块</h4>'
+                . '<p>放在文章列表与分页<b>之后</b>（GardenWalk 是 <code>index.php</code>）；'
+                . '内容是「0 结果引导」和「已忽略标点/空格重新搜索」这类提示：</p>'
                 . '<pre><code>' . $esc($snippetExtra) . '</code></pre>'
                 . '<ul>'
-                . '<li>装了「轻言 Qingyan」才有那一段；没装、或上面选「不列」，这一行什么都不输出。</li>'
+                . '<li>不在搜索页、或没有提示要显示时，这一行什么都不输出。</li>'
                 . '<li><b>不写这一行也行</b>：插件注册了 <code>Widget_Archive:footer</code> 钩子兜底，'
                 . '只是位置会落在页脚附近。</li>'
                 . '</ul>'
@@ -1094,7 +1065,10 @@ CODE;
                             ? @unserialize($current)
                             : json_decode($current, true);
 
-                        if (!is_array($decoded) || array() === $decoded) {
+                        // 默认值本身为空（1.0.9 起没有配置项）时，空数组是**合法**的
+                        $emptyOk = empty(self::defaults());
+
+                        if (!is_array($decoded) || (array() === $decoded && !$emptyOk)) {
                             // 空行 / 坏行 → 整行换成默认值
                             $fixed = $json;
                         } else {
@@ -1218,26 +1192,11 @@ CODE;
                 }
             }
 
-            $clsRadio = self::elementClass('Radio');
-            $extra = new $clsRadio(
-                'qingyanExtra',
-                array('1' => _t('列出'), '0' => _t('不列')),
-                '1',
-                _t('搜索结果页里附带「轻言」命中'),
-                _t('装了轻言插件时，搜索结果页（文章列表下面）会另列一组轻言里的命中。'
-                    . '<br>本插件**不依赖**轻言：没装轻言、或这里选「不列」，就只显示文章结果。')
-            );
-            $form->addInput($extra);
-
-            $clsText = self::elementClass('Text');
-            $limit = new $clsText(
-                'qingyanLimit',
-                NULL,
-                '5',
-                _t('轻言那组最多显示几条'),
-                _t('默认 5 条，后面跟一个「在轻言里看全部 →」的链接。')
-            );
-            $form->addInput($limit);
+            /*
+             * 1.0.9 起本插件没有可配置项：
+             * 「结果页列出轻言命中」已移除（轻言内容的搜索由轻言插件自己做）。
+             * 设置页保留「怎么用」说明 + 在线更新提示条。
+             */
 
             /*
              * 在线更新提示条（新版本 → 黄条 +「一键更新」；否则绿条 +「立即检查」）。
@@ -1363,10 +1322,25 @@ CODE;
 
             $clean = self::sanitize($settings);
 
+            /*
+             * 1.0.9 起没有配置项（`sanitize()` 返回空数组）。
+             * 注意不能直接 `configPlugin('SearchPlus', array())` —— 核心对空数组的语义是
+             * **删除配置行**；行没了之后 `Options->plugin()` 会抛「配置信息没有找到」，
+             * 设置页反而 500。这里改为写回「空 JSON」并保留该行。
+             */
+            if (empty($clean)) {
+                try {
+                    self::repairConfigRow();
+                } catch (Throwable $e) {
+                    return false;
+                }
+
+                return true;
+            }
+
             try {
                 // 用核心自己的写配置方法：它同时处理「插入」与「合并更新」
                 Widget\Plugins\Edit::configPlugin('SearchPlus', $clean);
-                self::$optCache = array();
             } catch (Throwable $e) {
                 // 自己写失败就让核心保存原始值，总比配置丢了强
                 return false;
@@ -1386,77 +1360,19 @@ CODE;
          */
         public static function sanitize($settings)
         {
-            $settings = is_array($settings) ? $settings : (array) $settings;
-            $defaults = self::defaults();
-            $clean    = array();
-
-            $clean['qingyanExtra'] = (isset($settings['qingyanExtra'])
-                && '0' === strval($settings['qingyanExtra'])) ? '0' : '1';
-
-            $limit = isset($settings['qingyanLimit']) ? intval($settings['qingyanLimit']) : 5;
-            $clean['qingyanLimit'] = (string) max(1, min(20, $limit > 0 ? $limit : 5));
-
-            // 其它未知键一律丢弃（见上面的说明）
-            foreach ($defaults as $key => $value) {
-                if (!array_key_exists($key, $clean)) {
-                    $clean[$key] = $value;
-                }
-            }
-
-            return $clean;
+            /*
+             * 本版本没有配置项：**一切输入都丢弃**。
+             *
+             * 这也是「升级清理」的关键：旧版本写进库里的 `qingyanExtra` /
+             * `qingyanLimit` 会在下次保存时被裁掉；即使不保存，
+             * `repairConfigRow()` 打开设置页时也会按 defaults() 裁剪。
+             */
+            return array();
         }
 
         /* ============================================================== */
         /* 内部工具                                                        */
         /* ============================================================== */
-
-        /**
-         * 读配置（拿不到就返回默认值，绝不抛异常）
-         *
-         * @param string $key
-         * @param mixed  $default
-         * @return mixed
-         */
-        public static function opt($key, $default = NULL)
-        {
-            if (array_key_exists($key, self::$optCache)) {
-                return self::$optCache[$key];
-            }
-
-            $value = NULL;
-
-            try {
-                $config = Helper::options()->plugin('SearchPlus');
-
-                if (isset($config[$key]) && '' !== $config[$key] && NULL !== $config[$key]) {
-                    $value = $config[$key];
-                }
-            } catch (Throwable $e) {
-                $value = NULL;
-            }
-
-            if ((NULL === $value || '' === $value) && array_key_exists($key, self::defaults())) {
-                $value = self::defaults()[$key];
-            }
-
-            self::$optCache[$key] = $value;
-
-            return (NULL === $value || '' === $value) ? $default : $value;
-        }
-
-        /**
-         * 读布尔配置
-         *
-         * @param string $key
-         * @param bool   $default
-         * @return bool
-         */
-        public static function boolOpt($key, $default = false)
-        {
-            $value = self::opt($key, $default ? '1' : '0');
-
-            return '1' === strval($value) || true === $value;
-        }
 
         /**
          * 读取**未经核心过滤**的原文关键词
@@ -1533,127 +1449,6 @@ CODE;
         }
 
         /**
-         * 轻言的命中（轻言不在就返回空数组 —— 本插件不依赖它）
-         *
-         * @param string $keyword
-         * @return array
-         */
-        protected static function qingyanRows($keyword)
-        {
-            if (!self::boolOpt('qingyanExtra', true) || !self::hasQingyan()) {
-                return array();
-            }
-
-            try {
-                return Qingyan_Model::search($keyword, intval(self::opt('qingyanLimit', 5)));
-            } catch (Throwable $e) {
-                return array();
-            }
-        }
-
-        /**
-         * 轻言的命中条数
-         *
-         * @param string $keyword
-         * @return int
-         */
-        protected static function qingyanTotal($keyword)
-        {
-            if (!self::hasQingyan() || !method_exists('Qingyan_Model', 'searchCount')) {
-                return 0;
-            }
-
-            try {
-                return intval(Qingyan_Model::searchCount($keyword));
-            } catch (Throwable $e) {
-                return 0;
-            }
-        }
-
-        /**
-         * 轻言在不在
-         *
-         * @return bool
-         */
-        protected static function hasQingyan()
-        {
-            return class_exists('Qingyan_Model') && method_exists('Qingyan_Model', 'search');
-        }
-
-        /**
-         * 轻言前台地址
-         *
-         * @return string
-         */
-        protected static function qingyanFrontUrl()
-        {
-            if (class_exists('Qingyan_Plugin') && method_exists('Qingyan_Plugin', 'frontUrl')) {
-                try {
-                    return (string) Qingyan_Plugin::frontUrl();
-                } catch (Throwable $e) {
-                    // 忽略，下面兜底
-                }
-            }
-
-            return (string) Helper::options()->siteUrl;
-        }
-
-        /**
-         * 「在轻言里看全部」的地址
-         *
-         * @param string $keyword
-         * @param string $front
-         * @return string
-         */
-        protected static function qingyanSearchUrl($keyword, $front)
-        {
-            return $front . (false === strpos($front, '?') ? '?' : '&') . 'q=' . urlencode($keyword);
-        }
-
-        /**
-         * 摘要：优先用轻言那边的 snippet()（关键词附近截 + 高亮），没有就本地截
-         *
-         * @param string $text
-         * @param string $keyword
-         * @return string
-         */
-        protected static function snippet($text, $keyword)
-        {
-            if (self::hasQingyan() && method_exists('Qingyan_Model', 'snippet')) {
-                try {
-                    return Qingyan_Model::snippet($text, $keyword, 70);
-                } catch (Throwable $e) {
-                    // 落到下面兜底
-                }
-            }
-
-            $plain = preg_replace('/\s+/u', ' ', trim(strip_tags((string) $text)));
-            $plain = is_string($plain) ? $plain : '';
-            $cut   = function_exists('mb_substr') ? mb_substr($plain, 0, 70, 'UTF-8') : substr($plain, 0, 70);
-
-            return htmlspecialchars((string) $cut, ENT_QUOTES, 'UTF-8');
-        }
-
-        /**
-         * 「多久以前」：优先用轻言的 timeAgo()，没有就退回日期
-         *
-         * @param int $timestamp
-         * @return string
-         */
-        protected static function timeAgo($timestamp)
-        {
-            if (self::hasQingyan() && method_exists('Qingyan_Model', 'timeAgo')) {
-                try {
-                    return Qingyan_Model::timeAgo($timestamp);
-                } catch (Throwable $e) {
-                    // 落到下面
-                }
-            }
-
-            return date('Y-m-d H:i', intval($timestamp));
-        }
-
-        /**
          * 插件资源地址（带 mtime 破缓存）
          *
          * @param string $file
@@ -1672,29 +1467,6 @@ CODE;
             return $url;
         }
 
-        /**
-         * 跨版本取表单元素类名
-         *
-         * @param string $type
-         * @return string
-         */
-        protected static function elementClass($type)
-        {
-            $candidates = array(
-                'Typecho\\Widget\\Helper\\Form\\Element\\' . $type,
-                'Typecho_Widget_Helper_Form_Element_' . $type,
-            );
-
-            foreach ($candidates as $class) {
-                if (class_exists($class)) {
-                    return $class;
-                }
-            }
-
-            return class_exists('Typecho_Widget_Helper_Form_Element_Text')
-                ? 'Typecho_Widget_Helper_Form_Element_Text'
-                : 'Typecho\\Widget\\Helper\\Form\\Element\\Text';
-        }
     }
 
     /**
