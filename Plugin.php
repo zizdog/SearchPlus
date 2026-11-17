@@ -7,7 +7,7 @@
  *
  * @package SearchPlus
  * @author  zizdog
- * @version 1.0.9
+ * @version 1.0.10
  * @link    https://zizdog.com
  */
 
@@ -29,7 +29,7 @@ namespace {
     class SearchPlus_Plugin_Base implements Typecho_Plugin_Interface
     {
         /** @var string */
-        const VERSION = '1.0.9';
+        const VERSION = '1.0.10';
 
         /** 跳板路由名 */
         const ROUTE_JUMP = 'searchplus';
